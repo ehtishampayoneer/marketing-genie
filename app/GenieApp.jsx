@@ -155,6 +155,8 @@ const CSS = `
 .mg-b.go{background:var(--ink-on-p);color:var(--card);border-color:var(--ink-on-p);font-weight:500}
 .mg-b.go:hover{opacity:.85}
 .mg-done{font-family:var(--mono);font-size:11px;color:var(--graphite-2);letter-spacing:.5px}
+.mg-stat-done{font-family:var(--mono);font-size:11px;letter-spacing:.5px;color:var(--card);background:var(--ink-on-p);padding:4px 9px;border-radius:20px;flex:0 0 auto}
+.mg-feed-t{font-family:var(--mono);font-size:10.5px;color:var(--graphite-2);flex:0 0 auto;min-width:48px}
 
 /* pillar page */
 .mg-pillar{display:grid;grid-template-columns:1fr 1fr;gap:16px}
@@ -302,6 +304,9 @@ export default function App() {
   const [queue, setQueue] = useState([]);
   const [dials, setDials] = useState({});
   const [mobile, setMobile] = useState("chat"); // chat | work
+  const [feed, setFeed] = useState([]);          // live "what the genie did" log
+  const [live, setLive] = useState(null);        // growing metrics + chart after approvals
+  const [profile, setProfile] = useState(null);  // session memory of the toured product
   const scrollRef = useRef(null);
   const taRef = useRef(null);
 
@@ -316,11 +321,66 @@ export default function App() {
 
   function applyState(s) {
     setState(s);
-    setQueue(s.queue || []);
+    setQueue((s.queue || []).map((q, i) => ({ ...q, id: "q" + i + "_" + Date.now(), status: "pending" })));
     const d = {};
     Object.keys(s.pillars || {}).forEach(k => { if (s.pillars[k]) d[k] = "approve"; });
     setDials(d);
+    setLive({
+      metrics: { ...(s.metrics || { visitors: 0, signups: 0, customers: 0, revenue: 0 }) },
+      chart: (s.chart || []).slice()
+    });
+    // Session memory: a living profile of the product the genie just toured.
+    setProfile({
+      product: s.product || "your product",
+      bottleneck: s.bottleneck,
+      mode: s.mode,
+      pillars: s.pillars,
+      plans: s.pillarPlans || {},
+      learnedAt: new Date().toLocaleTimeString()
+    });
+    setFeed([{ t: timeNow(), text: "X-ray complete — diagnosed " + (s.product || "your product") + ". Cockpit live." }]);
     setTab("overview");
+  }
+
+  function timeNow() {
+    return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // Approve a queued action: it "runs", logs to the feed, and nudges the metrics up.
+  function approveItem(id) {
+    setQueue(prev => prev.map(q => q.id === id ? { ...q, status: "working" } : q));
+    const item = queue.find(q => q.id === id);
+    if (!item) return;
+    setFeed(f => [{ t: timeNow(), text: "Working on: " + item.title }, ...f]);
+    setTimeout(() => {
+      setQueue(prev => prev.map(q => q.id === id ? { ...q, status: "done" } : q));
+      setFeed(f => [{ t: timeNow(), text: "Done: " + item.title + " — live now." }, ...f]);
+      // Each shipped action nudges the funnel (simulated for the demo).
+      setLive(L => {
+        if (!L) return L;
+        const bump = item.pillar === "ads" ? 90 : item.pillar === "social" ? 60 : item.pillar === "blog" ? 40 : 30;
+        const sUp = Math.max(1, Math.round(bump / 12));
+        const chart = L.chart.slice();
+        chart.push((chart[chart.length - 1] || 0) + sUp);
+        if (chart.length > 12) chart.shift();
+        return {
+          metrics: {
+            visitors: (L.metrics.visitors || 0) + bump,
+            signups: (L.metrics.signups || 0) + sUp,
+            customers: (L.metrics.customers || 0) + (Math.random() < 0.5 ? 1 : 0),
+            revenue: (L.metrics.revenue || 0) + (Math.random() < 0.5 ? 9 : 0)
+          },
+          chart
+        };
+      });
+    }, 1400);
+  }
+
+  function editItem(id) {
+    const item = queue.find(q => q.id === id);
+    setQueue(prev => prev.filter(q => q.id !== id));
+    if (item) setInput("Edit this " + item.pillar + " action: \"" + item.title + "\" — ");
+    if (taRef.current) taRef.current.focus();
   }
 
   async function send() {
@@ -336,7 +396,12 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: next.map(m => ({ role: m.role, content: m.content }))
+          messages: next.map(m => ({ role: m.role, content: m.content })),
+          memory: profile
+            ? "You have already toured and diagnosed this product earlier in this session. Remembered profile: " +
+              JSON.stringify(profile) +
+              ". Use this; don't re-run the whole tour unless they share a new product."
+            : ""
         })
       });
 
@@ -402,7 +467,6 @@ export default function App() {
     e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
     setInput(e.target.value);
   }
-  function resolve(i) { setQueue(q => q.filter((_, idx) => idx !== i)); }
 
   const PILLARS = [
     { id: "overview", label: "Overview", always: true },
@@ -524,10 +588,10 @@ export default function App() {
                 {/* metrics */}
                 <div className="mg-cards">
                   {[
-                    ["Visitors", state.metrics?.visitors, "this period"],
-                    ["Signups", state.metrics?.signups, "from visitors"],
-                    ["Paying", state.metrics?.customers, "subscribers"],
-                    ["Revenue", state.metrics?.revenue != null ? "$" + state.metrics.revenue : "—", "recurring"]
+                    ["Visitors", (live || state).metrics?.visitors, "this period"],
+                    ["Signups", (live || state).metrics?.signups, "from visitors"],
+                    ["Paying", (live || state).metrics?.customers, "subscribers"],
+                    ["Revenue", (live || state).metrics?.revenue != null ? "$" + (live || state).metrics.revenue : "—", "recurring"]
                   ].map(([l, v, s]) => (
                     <div className="mg-card" key={l}>
                       <div className="lbl">{l}</div>
@@ -555,7 +619,7 @@ export default function App() {
                       })}
                     </div>
                   </div>
-                  <Chart data={state.chart || FALLBACK.chart} tip={tip} setTip={setTip} />
+                  <Chart data={(live && live.chart && live.chart.length ? live.chart : state.chart) || FALLBACK.chart} tip={tip} setTip={setTip} />
                   <div className="mg-hint" style={{ color: "var(--graphite-2)", textAlign: "left", marginTop: 12 }}>
                     Tap a point to see what the genie did to cause it.
                   </div>
@@ -565,20 +629,43 @@ export default function App() {
                 <div className="mg-tray">
                   <div className="mg-tray-h">
                     <span className="t">Needs your approval</span>
-                    <span className="mg-count">{queue.length}</span>
+                    <span className="mg-count">{queue.filter(q => q.status === "pending").length}</span>
                   </div>
                   {queue.length === 0 && (
                     <div className="mg-q"><span className="mg-done">All clear — the genie is working. New moves land here for your sign-off.</span></div>
                   )}
-                  {queue.map((q, i) => (
-                    <div className="mg-q" key={i}>
+                  {queue.map((q) => (
+                    <div className="mg-q" key={q.id}>
                       <span className="pill">{q.pillar}</span>
                       <div className="qt">{q.title}{q.sub && <small>{q.sub}</small>}</div>
-                      <span className={"mg-risk " + (q.risk === "high" ? "high" : "low")}>{q.risk === "high" ? "approve" : "low risk"}</span>
-                      <div className="mg-acts">
-                        <button className="mg-b" onClick={() => resolve(i)}>Edit</button>
-                        <button className="mg-b go" onClick={() => resolve(i)}>Approve</button>
-                      </div>
+                      {q.status === "pending" && (
+                        <>
+                          <span className={"mg-risk " + (q.risk === "high" ? "high" : "low")}>{q.risk === "high" ? "approve" : "low risk"}</span>
+                          <div className="mg-acts">
+                            <button className="mg-b" onClick={() => editItem(q.id)}>Edit</button>
+                            <button className="mg-b go" onClick={() => approveItem(q.id)}>Approve</button>
+                          </div>
+                        </>
+                      )}
+                      {q.status === "working" && <span className="mg-done" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span className="mg-dot think" style={{ background: "var(--ink-on-p)", boxShadow: "none" }} />Working…</span>}
+                      {q.status === "done" && <span className="mg-stat-done">✓ Live</span>}
+                    </div>
+                  ))}
+                </div>
+
+                {/* live activity feed */}
+                <div className="mg-tray" style={{ marginTop: 22 }}>
+                  <div className="mg-tray-h">
+                    <span className="t">What the genie is doing</span>
+                    <span className="mg-count">{feed.length}</span>
+                  </div>
+                  {feed.length === 0 && (
+                    <div className="mg-q"><span className="mg-done">Approve a move above and watch it happen here.</span></div>
+                  )}
+                  {feed.map((f, i) => (
+                    <div className="mg-q" key={i}>
+                      <span className="mg-feed-t">{f.t}</span>
+                      <div className="qt" style={{ fontSize: 13 }}>{f.text}</div>
                     </div>
                   ))}
                 </div>
