@@ -13,9 +13,14 @@ const SYSTEM = `You are Genie — the Marketing Genie, an AI growth operator for
 Run a short intake, then diagnose the ONE thing blocking growth, then hand over a plan.
 Ask, one at a time, only what you still need: product link -> stage (launched? any users/sales yet?) -> price/model -> who the customer is -> main goal.
 
-# READING THEIR PAGE
-- If a section labelled PAGE CONTENT appears below, that is the real text of their live page. Base your observations ONLY on it, and reference specifics you actually see.
-- If there is NO PAGE CONTENT, you CANNOT see their page. Do not pretend to. Ask them to describe it in one line instead.
+# READING THEIR SITE
+- If a section labelled SITE CONTENT appears below, those are the real public pages of their product (each marked "## PAGE:"). Base your observations ONLY on what you see there, and reference specific pages/features/prices.
+- You see the PUBLIC experience (what a visitor sees) — landing, pricing, product/listing, signup. You do NOT see login-gated admin, seller, or buyer dashboards or the database; a marketing operator doesn't need those. For internal numbers (sellers, buyers, signups, revenue), ASK the user — don't guess or pretend.
+- If there is NO SITE CONTENT, you couldn't read the page. Say so plainly and ask them to describe it.
+
+# MARKETPLACES & TWO-SIDED PRODUCTS
+- If the product is a marketplace or two-sided platform (sellers + buyers, hosts + guests, supply + demand), recognize it explicitly. It has TWO marketing problems, not one, and they need different strategies.
+- A two-sided platform usually has a "chicken-and-egg" cold-start: you typically grow ONE side first (often supply/sellers) so the other side has a reason to show up. So ASK which side they need most right now, and diagnose/plan for that side specifically. Don't give a generic one-sided plan.
 
 # HONESTY (this is your entire value)
 - Never promise "perfect" analytics, guaranteed results, or a specific number of users.
@@ -45,10 +50,10 @@ Send a SHORT diagnosis message (2-3 sentences: name the bottleneck with evidence
 \`\`\`
 Use small or zero metrics for pre-launch. Output the JSON only once, when ready. Before then, just converse — no JSON.`;
 
-// Read the real page so the genie reasons from facts, not guesses.
+// Read ONE page's clean text.
 // Layer 1: Jina Reader (free, no key, renders JS). Layer 2: Firecrawl (if key set).
 // Layer 3: plain fetch + strip tags.
-async function readPage(url) {
+async function readOne(url) {
   // 1) Jina Reader — prepend r.jina.ai/ , returns clean markdown, no account needed.
   try {
     const headers = { "X-Return-Format": "markdown" };
@@ -56,7 +61,7 @@ async function readPage(url) {
     const r = await fetch("https://r.jina.ai/" + url, { headers });
     if (r.ok) {
       const md = await r.text();
-      if (md && md.length > 120) return md.slice(0, 6000);
+      if (md && md.length > 120) return md;
     }
   } catch (e) {}
 
@@ -71,7 +76,7 @@ async function readPage(url) {
       });
       const j = await r.json();
       const md = j?.data?.markdown || "";
-      if (md && md.length > 80) return md.slice(0, 6000);
+      if (md && md.length > 80) return md;
     } catch (e) {}
   }
 
@@ -85,9 +90,48 @@ async function readPage(url) {
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
       .trim();
-    if (text.length > 200) return text.slice(0, 6000);
+    if (text.length > 200) return text;
   } catch (e) {}
   return "";
+}
+
+// Read the WHOLE public-facing experience: the landing page, plus the key
+// pages a real visitor would hit (pricing, how-it-works, products, signup).
+// Public pages only — login-gated admin/seller/buyer backends are out of reach
+// (no credentials) and irrelevant to marketing anyway.
+async function readSite(startUrl) {
+  const main = await readOne(startUrl);
+  if (!main) return "";
+
+  let origin = "";
+  try { origin = new URL(startUrl).origin; } catch (e) { return main.slice(0, 6000); }
+
+  // Find links on the landing page that look like key public pages.
+  const wanted = /(pricing|plans|how-it-works|how|features|about|product|marketplace|sell|seller|become|list|shop|browse|signup|sign-up|register|get-started)/i;
+  const links = new Set();
+  const re = /\]\((https?:\/\/[^)\s]+|\/[^)\s]+)\)/g; // markdown links
+  let m;
+  while ((m = re.exec(main)) && links.size < 30) {
+    let href = m[1];
+    if (href.startsWith("/")) href = origin + href;
+    try {
+      const u = new URL(href);
+      if (u.origin !== origin) continue;            // same site only
+      if (!wanted.test(u.pathname)) continue;       // only key public pages
+      if (u.pathname === "/" ) continue;
+      links.add(u.origin + u.pathname);
+    } catch (e) {}
+  }
+
+  // Read up to 4 extra public pages (keeps it fast and within free limits).
+  const extra = [...links].slice(0, 4);
+  const pages = await Promise.all(extra.map(u => readOne(u).then(t => ({ u, t })).catch(() => ({ u, t: "" }))));
+
+  let out = "## PAGE: " + startUrl + "\n" + main.slice(0, 3500);
+  for (const p of pages) {
+    if (p.t) out += "\n\n## PAGE: " + p.u + "\n" + p.t.slice(0, 1800);
+  }
+  return out.slice(0, 12000);
 }
 
 export async function POST(req) {
@@ -101,18 +145,18 @@ export async function POST(req) {
     }));
     while (contents.length && contents[0].role === "model") contents.shift();
 
-    // If the latest user message has a link, read the real page.
+    // If the latest user message has a link, read the public site (several pages).
     let pageContext = "";
     const lastUser = [...(messages || [])].reverse().find(m => m.role === "user");
     const urlMatch =
       lastUser && lastUser.content && lastUser.content.match(/https?:\/\/[^\s)]+/);
     if (urlMatch) {
-      pageContext = await readPage(urlMatch[0].replace(/[.,!?)]+$/, ""));
+      pageContext = await readSite(urlMatch[0].replace(/[.,!?)]+$/, ""));
     }
     const sys =
       SYSTEM +
       (pageContext
-        ? "\n\n# PAGE CONTENT (the real text of the link the user shared — base observations only on this)\n" +
+        ? "\n\n# SITE CONTENT (the real public pages of the link the user shared — each marked '## PAGE:'. Base observations only on this. This is the full public experience a visitor sees; you do NOT have access to their login-gated admin/seller/buyer backends — for internal numbers, ask the user.)\n" +
           pageContext
         : "");
 
