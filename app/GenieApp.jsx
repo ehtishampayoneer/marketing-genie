@@ -219,17 +219,24 @@ function Genie({ size = 30, thinking = false }) {
         {/* body */}
         <path d="M32 22c8.5 0 13 6.5 13 14 0 4.6-2.4 8-6 9.4-2 0-2.6 1.2-2.6 2.6H27.6c0-1.4-.6-2.6-2.6-2.6-3.6-1.4-6-4.8-6-9.4 0-7.5 4.5-14 13-14Z"
           fill="#f3f3f1"/>
-        {/* arms fold suggestion */}
-        <path d="M22 38c4 2.4 16 2.4 20 0" stroke="rgba(11,11,13,.18)" strokeWidth="1.4" fill="none" strokeLinecap="round"/>
+        {/* navy coat */}
+        <path d="M19.6 36.4C21.6 43 26 47.6 32 47.6s10.4-4.6 12.4-11.2c-3.5 2.2-7.5 3.3-12.4 3.3s-8.9-1.1-12.4-3.3Z" fill="#27468f"/>
+        {/* lapels */}
+        <path d="M32 39.4 26.8 35.2 30.6 41.2Z" fill="#1b2f63"/>
+        <path d="M32 39.4 37.2 35.2 33.4 41.2Z" fill="#1b2f63"/>
+        {/* shirt v */}
+        <path d="M30.5 40 32 44 33.5 40 32 41.1Z" fill="#f3f3f1"/>
+        {/* tie */}
+        <path d="M32 40.3 30.85 42.3 32 46 33.15 42.3Z" fill="#1b2f63"/>
         {/* head */}
         <circle cx="32" cy="20" r="10" fill="#f3f3f1"/>
         {/* topknot */}
         <circle cx="32" cy="8.5" r="2.4" fill="#f3f3f1"/>
         <path d="M32 11v2.5" stroke="#f3f3f1" strokeWidth="2" strokeLinecap="round"/>
-        {/* face */}
+        {/* face — dot eyes */}
         <g fill="#15151a">
-          <ellipse className="genie-eye" cx="28.4" cy="20" rx="1.5" ry="2" style={{transformOrigin:"28.4px 20px"}}/>
-          <ellipse className="genie-eye" cx="35.6" cy="20" rx="1.5" ry="2" style={{transformOrigin:"35.6px 20px"}}/>
+          <circle className="genie-eye" cx="28.4" cy="20" r="1.7" style={{transformOrigin:"28.4px 20px"}}/>
+          <circle className="genie-eye" cx="35.6" cy="20" r="1.7" style={{transformOrigin:"35.6px 20px"}}/>
         </g>
         <path d="M29 24.4c1.8 1.5 4.2 1.5 6 0" stroke="#15151a" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
       </svg>
