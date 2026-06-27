@@ -158,6 +158,24 @@ const CSS = `
 .mg-stat-done{font-family:var(--mono);font-size:11px;letter-spacing:.5px;color:var(--card);background:var(--ink-on-p);padding:4px 9px;border-radius:20px;flex:0 0 auto}
 .mg-feed-t{font-family:var(--mono);font-size:10.5px;color:var(--graphite-2);flex:0 0 auto;min-width:48px}
 
+/* live tour */
+.mg-tour-start{background:var(--card);border:1px solid var(--hair);border-radius:16px;padding:24px}
+.mg-tour-start p{font-size:14px;line-height:1.6;color:var(--ink-on-p);margin:0 0 16px;max-width:520px}
+.mg-tour-err{margin-top:14px;background:var(--ink-on-p);color:var(--card);font-size:12.5px;padding:10px 14px;border-radius:10px;line-height:1.5}
+.mg-browser{background:var(--ink-3);border:1px solid var(--hair);border-radius:14px;overflow:hidden;height:540px}
+.mg-iframe{width:100%;height:100%;border:none;display:block;background:#fff}
+.mg-readbar{display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap}
+.mg-readinput{flex:1;min-width:200px;font-family:var(--mono);font-size:12.5px;padding:9px 12px;border:1px solid var(--hair-2);border-radius:10px;background:var(--card);color:var(--ink-on-p);outline:none}
+.mg-readinput:focus{border-color:var(--graphite)}
+.mg-notes-h{display:flex;align-items:center;gap:10px;font-family:var(--display);font-size:17px;font-weight:500;margin:26px 0 12px;color:var(--ink-on-p)}
+.mg-note-empty{font-size:13px;color:var(--graphite);line-height:1.55;background:var(--card);border:1px dashed var(--hair-2);border-radius:12px;padding:16px 18px}
+.mg-notes{display:flex;flex-direction:column;gap:10px}
+.mg-note{background:var(--card);border:1px solid var(--hair);border-radius:12px;padding:14px 16px;animation:fade .4s ease both}
+.mg-note.pending{opacity:.6}
+.mg-note-t{font-family:var(--display);font-size:15px;font-weight:500;color:var(--ink-on-p);margin-bottom:3px}
+.mg-note-u{font-family:var(--mono);font-size:10.5px;color:var(--graphite-2);margin-bottom:8px;word-break:break-all}
+.mg-note-b{font-size:13px;line-height:1.55;color:var(--graphite);white-space:pre-wrap}
+
 /* pillar page */
 .mg-pillar{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .mg-pblock{background:var(--card);border:1px solid var(--hair);border-radius:14px;padding:18px 20px}
@@ -307,6 +325,9 @@ export default function App() {
   const [feed, setFeed] = useState([]);          // live "what the genie did" log
   const [live, setLive] = useState(null);        // growing metrics + chart after approvals
   const [profile, setProfile] = useState(null);  // session memory of the toured product
+  const [tour, setTour] = useState({ active: false, viewerUrl: "", sessionId: "", reading: false, error: "" });
+  const [notes, setNotes] = useState([]);        // genie's notes: one card per room read
+  const [tourUrl, setTourUrl] = useState("");    // URL the user wants to read in the tour
   const scrollRef = useRef(null);
   const taRef = useRef(null);
 
@@ -381,6 +402,120 @@ export default function App() {
     setQueue(prev => prev.filter(q => q.id !== id));
     if (item) setInput("Edit this " + item.pillar + " action: \"" + item.title + "\" — ");
     if (taRef.current) taRef.current.focus();
+  }
+
+  // ---- LIVE TOUR (Steel co-browser) ----
+  async function startTour() {
+    setTour(t => ({ ...t, active: true, error: "", reading: true }));
+    setTab("tour");
+    if (window.innerWidth <= 860) setMobile("work");
+    try {
+      const r = await fetch("/api/browser", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start" })
+      });
+      const d = await r.json();
+      if (d.error || !d.viewerUrl) {
+        setTour(t => ({ ...t, reading: false, error: d.message || "Couldn't open the live browser. Add STEEL_API_KEY in Vercel." }));
+        return;
+      }
+      setTour({ active: true, viewerUrl: d.viewerUrl, sessionId: d.sessionId, reading: false, error: "" });
+      setMessages(prev => [...prev, { role: "assistant", content: "The live browser is open on the right. Type your product's URL in its address bar and load your storefront — then hit \"Genie, read this page\" and I'll take notes. We'll walk through it room by room." }]);
+    } catch (e) {
+      setTour(t => ({ ...t, reading: false, error: "Couldn't reach the browser service." }));
+    }
+  }
+
+  // Read whatever page is loaded in the tour, add a note card, and let the genie react.
+  async function readRoom() {
+    const url = tourUrl.trim();
+    if (!url) {
+      setMessages(prev => [...prev, { role: "assistant", content: "Paste the URL that's currently open in the browser into the little box, then hit read — that tells me which page to look at." }]);
+      return;
+    }
+    setTour(t => ({ ...t, reading: true }));
+    setNotes(n => [...n, { url, title: "Reading…", body: "", pending: true }]);
+    try {
+      const r = await fetch("/api/browser", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "read", url })
+      });
+      const d = await r.json();
+      const body = (d.content || "").trim();
+      setNotes(n => {
+        const copy = n.slice();
+        copy[copy.length - 1] = {
+          url,
+          title: d.title || roomLabel(url),
+          body: body ? body.slice(0, 400) : "(couldn't read this page — try the public URL, or describe it to me)",
+          pending: false
+        };
+        return copy;
+      });
+      // Hand the page to the genie so it reacts and guides the next room.
+      const note = "I just read this page during our tour:\nURL: " + url + "\nContent:\n" + (body.slice(0, 3500) || "(empty)") +
+        "\n\nReact with one specific observation, then tell me which room to open next.";
+      setTour(t => ({ ...t, reading: false }));
+      sendSilent(note);
+    } catch (e) {
+      setTour(t => ({ ...t, reading: false }));
+      setNotes(n => { const c = n.slice(); c[c.length - 1] = { url, title: roomLabel(url), body: "(read failed)", pending: false }; return c; });
+    }
+  }
+
+  function roomLabel(url) {
+    const u = url.toLowerCase();
+    if (/product|item|listing/.test(u)) return "Product page";
+    if (/categor|collection|shop|browse|store/.test(u)) return "Storefront / category";
+    if (/seller|admin|dashboard|account/.test(u)) return "Backend / seller";
+    if (/price|plan/.test(u)) return "Pricing";
+    return "Page";
+  }
+
+  async function endTour() {
+    if (tour.sessionId) {
+      fetch("/api/browser", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "stop", sessionId: tour.sessionId }) }).catch(() => {});
+    }
+    setTour({ active: false, viewerUrl: "", sessionId: "", reading: false, error: "" });
+    sendSilent("That's the whole tour — here are all the rooms I noted: " + notes.map(n => n.title).join(", ") + ". Now give me your confident full read: what the product is, its strongest asset to build on, its biggest leak to fix, then run the diagnosis.");
+    setTab("overview");
+  }
+
+  // Send a message to the genie WITHOUT showing it as a user bubble (system-style nudge).
+  async function sendSilent(text) {
+    const next = [...messages, { role: "user", content: text }];
+    setBusy(true);
+    try {
+      const res = await fetch("/api/genie", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: next.map(m => ({ role: m.role, content: m.content })),
+          memory: profile ? "Remembered profile: " + JSON.stringify(profile) : ""
+        })
+      });
+      if (!res.body) { setBusy(false); return; }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let acc = "", started = false;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        acc += decoder.decode(value, { stream: true });
+        const shown = acc.split("```genie-state")[0].replace(/```\s*$/, "").trimEnd();
+        if (!started) { started = true; setBusy(false); setMessages(prev => [...prev, { role: "assistant", content: shown }]); }
+        else setMessages(prev => { const c = prev.slice(); c[c.length - 1] = { role: "assistant", content: shown }; return c; });
+      }
+      let parsed = null;
+      const m = acc.match(/```genie-state\s*([\s\S]*?)```/);
+      if (m) { try { parsed = JSON.parse(m[1].trim()); } catch (e) {} }
+      let finalTxt = acc.replace(/```genie-state[\s\S]*?```/, "").trim();
+      setMessages(prev => { const c = prev.slice(); if (c.length && c[c.length - 1].role === "assistant") c[c.length - 1] = { role: "assistant", content: finalTxt }; return c; });
+      if (parsed && parsed.ready) setTimeout(() => applyState(parsed), 400);
+    } catch (e) { setBusy(false); }
+    finally { setBusy(false); }
   }
 
   async function send() {
@@ -470,6 +605,7 @@ export default function App() {
 
   const PILLARS = [
     { id: "overview", label: "Overview", always: true },
+    { id: "tour", label: "Live Tour", always: true },
     { id: "social", label: "Social" },
     { id: "blog", label: "Blog/SEO" },
     { id: "email", label: "Email" },
@@ -557,12 +693,60 @@ export default function App() {
           </div>
 
           <div className="mg-body">
-            {!state && (
+            {!state && tab !== "tour" && (
               <div className="mg-empty">
                 <Genie size={64} />
                 <div className="mg-xray">X-Ray · standing by</div>
                 <h2>Your cockpit lights up here</h2>
-                <p>Tell the genie what you're building. It reads your product, finds the one thing blocking growth, and turns on only the channels that fit — right here.</p>
+                <p>Tell the genie what you're building, or take it on a guided tour of your product — it reads each page with you, takes notes, and finds what's blocking growth.</p>
+                <button className="mg-b go" style={{ padding: "10px 18px", fontSize: 13 }} onClick={startTour}>Start guided tour →</button>
+              </div>
+            )}
+
+            {tab === "tour" && (
+              <div className="mg-fadein">
+                <div className="mg-eyebrow" style={{ marginBottom: 4 }}>Guided X-ray</div>
+                <div className="mg-h" style={{ marginBottom: 14, fontSize: 23 }}>Live tour — walk me through your product</div>
+
+                {!tour.active && (
+                  <div className="mg-tour-start">
+                    <p>I'll open a real browser right here. Load your product in it, click through it room by room, and I'll read each page and take notes — then give you the full read.</p>
+                    <button className="mg-b go" style={{ padding: "10px 18px", fontSize: 13 }} onClick={startTour}>Open the live browser →</button>
+                    {tour.error && <div className="mg-tour-err">{tour.error}</div>}
+                  </div>
+                )}
+
+                {tour.active && (
+                  <>
+                    {tour.reading && !tour.viewerUrl && <div className="mg-tour-err" style={{ background: "var(--paper-3)", color: "var(--graphite)" }}>Opening a live browser…</div>}
+                    {tour.error && <div className="mg-tour-err">{tour.error}</div>}
+                    {tour.viewerUrl && (
+                      <>
+                        <div className="mg-browser">
+                          <iframe title="Live tour" src={tour.viewerUrl} className="mg-iframe" allow="clipboard-read; clipboard-write" />
+                        </div>
+                        <div className="mg-readbar">
+                          <input className="mg-readinput" placeholder="Paste the URL that's open above, then →" value={tourUrl} onChange={e => setTourUrl(e.target.value)} />
+                          <button className="mg-b go" disabled={tour.reading} onClick={readRoom}>{tour.reading ? "Reading…" : "Genie, read this page"}</button>
+                          <button className="mg-b" onClick={endTour}>Finish tour</button>
+                        </div>
+                      </>
+                    )}
+
+                    {/* Genie's Notes */}
+                    <div className="mg-notes-h">Genie's notes <span className="mg-count">{notes.length}</span></div>
+                    {notes.length === 0 && <div className="mg-note-empty">As you open each page and I read it, my notes appear here — building the full picture of your product.</div>}
+                    <div className="mg-notes">
+                      {notes.map((n, i) => (
+                        <div className={"mg-note" + (n.pending ? " pending" : "")} key={i}>
+                          <div className="mg-note-t">{n.title}</div>
+                          <div className="mg-note-u">{n.url}</div>
+                          <div className="mg-note-b">{n.body}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -672,7 +856,7 @@ export default function App() {
               </div>
             )}
 
-            {state && tab !== "overview" && (
+            {state && tab !== "overview" && tab !== "tour" && (
               <PillarView id={tab} state={state} dials={dials} setDials={setDials} />
             )}
           </div>
