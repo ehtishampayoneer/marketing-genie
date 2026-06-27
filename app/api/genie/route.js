@@ -37,13 +37,27 @@ export async function POST(req) {
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: SYSTEM }] },
         contents,
-        generationConfig: { maxOutputTokens: 1200, temperature: 0.7 }
+        generationConfig: {
+          maxOutputTokens: 2048,
+          temperature: 0.7,
+          thinkingConfig: { thinkingBudget: 0 }
+        }
       })
     });
 
     const data = await r.json();
-    const text =
+    let text =
       data?.candidates?.[0]?.content?.parts?.map(p => p.text).join("") || "";
+
+    // If still empty, show the real reason in the chat instead of a blank reply.
+    if (!text) {
+      const reason =
+        data?.error?.message ||
+        data?.candidates?.[0]?.finishReason ||
+        data?.promptFeedback?.blockReason ||
+        "no response from Gemini";
+      text = "⚠️ Brain not connected — " + reason;
+    }
 
     return new Response(JSON.stringify({ text }), {
       headers: { "Content-Type": "application/json" }
