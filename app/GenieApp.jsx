@@ -332,18 +332,51 @@ export default function App() {
           messages: next.map(m => ({ role: m.role, content: m.content }))
         })
       });
-      const data = await res.json();
-      let txt = (data.text || "").trim();
 
-      // extract genie-state JSON
-      let parsed = null;
-      const m = txt.match(/```genie-state\s*([\s\S]*?)```/);
-      if (m) {
-        try { parsed = JSON.parse(m[1].trim()); } catch (e) { parsed = null; }
-        txt = txt.replace(/```genie-state[\s\S]*?```/, "").trim();
+      if (!res.body) {
+        const fallback = (await res.text()) || "I hit a snag reaching my brain just now.";
+        setMessages(prev => [...prev, { role: "assistant", content: fallback }]);
+        return;
       }
-      if (!txt) txt = "Here's what I'm seeing — check the cockpit on the right.";
-      setMessages(prev => [...prev, { role: "assistant", content: txt }]);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let acc = "";
+      let started = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        acc += decoder.decode(value, { stream: true });
+        const shown = acc.split("```genie-state")[0].replace(/```\s*$/, "").trimEnd();
+        if (!started) {
+          started = true;
+          setBusy(false);
+          setMessages(prev => [...prev, { role: "assistant", content: shown }]);
+        } else {
+          setMessages(prev => {
+            const copy = prev.slice();
+            copy[copy.length - 1] = { role: "assistant", content: shown };
+            return copy;
+          });
+        }
+      }
+
+      // finalize: pull out the genie-state block, clean the visible text
+      let parsed = null;
+      const m = acc.match(/```genie-state\s*([\s\S]*?)```/);
+      if (m) { try { parsed = JSON.parse(m[1].trim()); } catch (e) { parsed = null; } }
+      let finalTxt = acc.replace(/```genie-state[\s\S]*?```/, "").trim();
+      if (!finalTxt) finalTxt = "Here's what I'm seeing — check the cockpit on the right.";
+      setMessages(prev => {
+        const copy = prev.slice();
+        if (copy.length && copy[copy.length - 1].role === "assistant") {
+          copy[copy.length - 1] = { role: "assistant", content: finalTxt };
+        } else {
+          copy.push({ role: "assistant", content: finalTxt });
+        }
+        return copy;
+      });
       if (parsed && parsed.ready) {
         setTimeout(() => { applyState(parsed); if (window.innerWidth <= 860) setMobile("work"); }, 450);
       }
