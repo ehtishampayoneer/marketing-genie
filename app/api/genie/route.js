@@ -134,7 +134,7 @@ async function readSite(startUrl) {
 
 export async function POST(req) {
   try {
-    const { messages } = await req.json();
+    const { messages, memory } = await req.json();
 
     // Gemini uses roles "user" and "model"; it must start with a user turn.
     let contents = (messages || []).map(m => ({
@@ -153,6 +153,7 @@ export async function POST(req) {
     }
     const sys =
       SYSTEM +
+      (memory ? "\n\n# SESSION MEMORY\n" + memory : "") +
       (pageContext
         ? "\n\n# SITE CONTENT (the real public pages of the link the user shared — each marked '## PAGE:'. Base observations only on this. This is the full public experience a visitor sees; you do NOT have access to their login-gated admin/seller/buyer backends — for internal numbers, ask the user.)\n" +
           pageContext
