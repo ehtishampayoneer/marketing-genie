@@ -328,6 +328,8 @@ export default function App() {
   const [tour, setTour] = useState({ active: false, viewerUrl: "", sessionId: "", reading: false, error: "" });
   const [notes, setNotes] = useState([]);        // genie's notes: one card per room read
   const [tourUrl, setTourUrl] = useState("");    // URL the user wants to read in the tour
+  const [sharedUrl, setSharedUrl] = useState(false); // has the user given a product link yet?
+  const [sharedUrl, setSharedUrl] = useState(""); // the product link the user shared with the genie
   const scrollRef = useRef(null);
   const taRef = useRef(null);
 
@@ -525,6 +527,7 @@ export default function App() {
     setMessages(next);
     setInput("");
     if (taRef.current) taRef.current.style.height = "auto";
+    if (/https?:\/\/[^\s)]+/.test(text)) setSharedUrl(true);
     setBusy(true);
     try {
       const res = await fetch("/api/genie", {
@@ -682,10 +685,12 @@ export default function App() {
           <div className="mg-tabs">
             {PILLARS.map(p => {
               const lit = p.always || (state && state.pillars && state.pillars[p.id]);
-              const disabled = !p.always && !state;
+              let disabled = !p.always && !state;
+              if (p.id === "tour") disabled = !sharedUrl;   // tour unlocks after a link is shared
               return (
                 <button key={p.id} className="mg-tab" data-on={tab === p.id ? "1" : "0"}
-                  disabled={disabled} onClick={() => setTab(p.id)}>
+                  disabled={disabled} onClick={() => setTab(p.id)}
+                  title={p.id === "tour" && !sharedUrl ? "Share your product link in the chat first" : ""}>
                   {p.label}{lit && !p.always && <span className="tdot" />}
                 </button>
               );
@@ -698,8 +703,7 @@ export default function App() {
                 <Genie size={64} />
                 <div className="mg-xray">X-Ray · standing by</div>
                 <h2>Your cockpit lights up here</h2>
-                <p>Tell the genie what you're building, or take it on a guided tour of your product — it reads each page with you, takes notes, and finds what's blocking growth.</p>
-                <button className="mg-b go" style={{ padding: "10px 18px", fontSize: 13 }} onClick={startTour}>Start guided tour →</button>
+                <p>Share your product link in the chat. Then the genie can walk you through it live — the <strong>Live Tour</strong> tab unlocks, and you tour each page together while it takes notes.</p>
               </div>
             )}
 
@@ -708,9 +712,16 @@ export default function App() {
                 <div className="mg-eyebrow" style={{ marginBottom: 4 }}>Guided X-ray</div>
                 <div className="mg-h" style={{ marginBottom: 14, fontSize: 23 }}>Live tour — walk me through your product</div>
 
-                {!tour.active && (
+                {!sharedUrl && !tour.active && (
                   <div className="mg-tour-start">
-                    <p>I'll open a real browser right here. Load your product in it, click through it room by room, and I'll read each page and take notes — then give you the full read.</p>
+                    <p>Share your product link with the genie in the chat first. Once it knows what it's looking at, the live browser opens here and I'll walk through it with you, room by room.</p>
+                    <button className="mg-b" style={{ padding: "9px 16px", fontSize: 13 }} onClick={() => { if (taRef.current) taRef.current.focus(); if (window.innerWidth <= 860) setMobile("chat"); }}>Go to chat →</button>
+                  </div>
+                )}
+
+                {sharedUrl && !tour.active && (
+                  <div className="mg-tour-start">
+                    <p>Ready when you are. I'll open a real browser right here — load <b>{sharedUrl}</b>, click through it room by room, and I'll read each page and take notes, then give you the full read.</p>
                     <button className="mg-b go" style={{ padding: "10px 18px", fontSize: 13 }} onClick={startTour}>Open the live browser →</button>
                     {tour.error && <div className="mg-tour-err">{tour.error}</div>}
                   </div>
