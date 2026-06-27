@@ -29,7 +29,9 @@ export async function POST(req) {
     while (contents.length && contents[0].role === "model") contents.shift();
 
     const key = process.env.GEMINI_API_KEY;
-    const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + key;
+    const url =
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=" +
+      key;
 
     const r = await fetch(url, {
       method: "POST",
@@ -45,22 +47,53 @@ export async function POST(req) {
       })
     });
 
-    const data = await r.json();
-    let text =
-      data?.candidates?.[0]?.content?.parts?.map(p => p.text).join("") || "";
-
-    // If still empty, show the real reason in the chat instead of a blank reply.
-    if (!text) {
-      const reason =
-        data?.error?.message ||
-        data?.candidates?.[0]?.finishReason ||
-        data?.promptFeedback?.blockReason ||
-        "no response from Gemini";
-      text = "⚠️ Brain not connected — " + reason;
+    // If Gemini errored, send the real reason as plain text.
+    if (!r.ok || !r.body) {
+      let reason = "no response from Gemini";
+      try {
+        const data = await r.json();
+        reason = data?.error?.message || reason;
+      } catch (e) {}
+      return new Response("⚠️ Brain not connected — " + reason, {
+        headers: { "Content-Type": "text/plain; charset=utf-8" }
+      });
     }
 
-    return new Response(JSON.stringify({ text }), {
-      headers: { "Content-Type": "application/json" }
+    // Turn Gemini's stream into plain text the genie types out live.
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        let buffer = "";
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let nl;
+            while ((nl = buffer.indexOf("\n")) >= 0) {
+              const line = buffer.slice(0, nl).trim();
+              buffer = buffer.slice(nl + 1);
+              if (!line.startsWith("data:")) continue;
+              const payload = line.slice(5).trim();
+              if (!payload || payload === "[DONE]") continue;
+              try {
+                const j = JSON.parse(payload);
+                const piece =
+                  j?.candidates?.[0]?.content?.parts?.map(p => p.text).join("") || "";
+                if (piece) controller.enqueue(encoder.encode(piece));
+              } catch (e) {}
+            }
+          }
+        } catch (e) {}
+        controller.close();
+      }
+    });
+
+    return new Response(stream, {
+      headers: { "Content-Type": "text/plain; charset=utf-8" }
     });
   } catch (e) {
     return new Response(JSON.stringify({ text: "", error: String(e) }), {
