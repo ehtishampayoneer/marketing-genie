@@ -167,6 +167,7 @@ const CSS = `
 .mg-readbar{display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap}
 .mg-readinput{flex:1;min-width:200px;font-family:var(--mono);font-size:12.5px;padding:9px 12px;border:1px solid var(--hair-2);border-radius:10px;background:var(--card);color:var(--ink-on-p);outline:none}
 .mg-readinput:focus{border-color:var(--graphite)}
+.mg-tour-hint{font-size:12.5px;color:var(--graphite);margin:10px 0 4px;line-height:1.5}
 .mg-notes-h{display:flex;align-items:center;gap:10px;font-family:var(--display);font-size:17px;font-weight:500;margin:26px 0 12px;color:var(--ink-on-p)}
 .mg-note-empty{font-size:13px;color:var(--graphite);line-height:1.55;background:var(--card);border:1px dashed var(--hair-2);border-radius:12px;padding:16px 18px}
 .mg-notes{display:flex;flex-direction:column;gap:10px}
@@ -405,27 +406,12 @@ export default function App() {
     if (taRef.current) taRef.current.focus();
   }
 
-  // ---- LIVE TOUR (Steel co-browser) ----
+  // ---- LIVE TOUR (guided page-by-page reading; stable & free) ----
   async function startTour() {
-    setTour(t => ({ ...t, active: true, error: "", reading: true }));
+    setTour({ active: true, viewerUrl: "", sessionId: "", reading: false, error: "" });
     setTab("tour");
     if (window.innerWidth <= 860) setMobile("work");
-    try {
-      const r = await fetch("/api/browser", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start" })
-      });
-      const d = await r.json();
-      if (d.error || !d.viewerUrl) {
-        setTour(t => ({ ...t, reading: false, error: d.message || "Couldn't open the live browser. Add STEEL_API_KEY in Vercel." }));
-        return;
-      }
-      setTour({ active: true, viewerUrl: d.sessionViewerUrl || d.viewerUrl, sessionId: d.sessionId, reading: false, error: "" });
-      setMessages(prev => [...prev, { role: "assistant", content: "The live browser is open on the right. Type your product's URL in its address bar and load your storefront — then hit \"Genie, read this page\" and I'll take notes. We'll walk through it room by room." }]);
-    } catch (e) {
-      setTour(t => ({ ...t, reading: false, error: "Couldn't reach the browser service." }));
-    }
+    setMessages(prev => [...prev, { role: "assistant", content: "Let's tour your product together. Open your storefront in a new browser tab, copy its address, and paste it in the box on the right — I'll read that page and take notes. Then we'll go room by room: storefront → a category → a product → your seller/backend view." }]);
   }
 
   // Read whatever page is loaded in the tour, add a note card, and let the genie react.
@@ -720,32 +706,23 @@ export default function App() {
 
                 {sharedUrl && !tour.active && (
                   <div className="mg-tour-start">
-                    <p>Ready when you are. I'll open a real browser right here — load <b>{sharedUrl}</b>, click through it room by room, and I'll read each page and take notes, then give you the full read.</p>
-                    <button className="mg-b go" style={{ padding: "10px 18px", fontSize: 13 }} onClick={startTour}>Open the live browser →</button>
-                    {tour.error && <div className="mg-tour-err">{tour.error}</div>}
+                    <p>Ready when you are. I'll tour your product with you, page by page — open each page in your own browser, paste its address here, and I'll read it, react, and point you to the next room. Then I give you the full read.</p>
+                    <button className="mg-b go" style={{ padding: "10px 18px", fontSize: 13 }} onClick={startTour}>Start the tour →</button>
                   </div>
                 )}
 
                 {tour.active && (
                   <>
-                    {tour.reading && !tour.viewerUrl && <div className="mg-tour-err" style={{ background: "var(--paper-3)", color: "var(--graphite)" }}>Opening a live browser…</div>}
-                    {tour.error && <div className="mg-tour-err">{tour.error}</div>}
-                    {tour.viewerUrl && (
-                      <>
-                        <div className="mg-browser">
-                          <iframe title="Live tour" src={tour.viewerUrl} className="mg-iframe" allow="clipboard-read; clipboard-write" />
-                        </div>
-                        <div className="mg-readbar">
-                          <input className="mg-readinput" placeholder="Paste the URL that's open above, then →" value={tourUrl} onChange={e => setTourUrl(e.target.value)} />
-                          <button className="mg-b go" disabled={tour.reading} onClick={readRoom}>{tour.reading ? "Reading…" : "Genie, read this page"}</button>
-                          <button className="mg-b" onClick={endTour}>Finish tour</button>
-                        </div>
-                      </>
-                    )}
+                    <div className="mg-readbar">
+                      <input className="mg-readinput" placeholder="Paste a page URL from your product, then →" value={tourUrl} onChange={e => setTourUrl(e.target.value)} onKeyDown={e => { if (e.key === "Enter") readRoom(); }} />
+                      <button className="mg-b go" disabled={tour.reading} onClick={readRoom}>{tour.reading ? "Reading…" : "Genie, read this page"}</button>
+                      <button className="mg-b" onClick={endTour}>Finish tour</button>
+                    </div>
+                    <div className="mg-tour-hint">Open your storefront, a category, a product, and your seller/backend view — paste each one and I'll build the full picture.</div>
 
                     {/* Genie's Notes */}
                     <div className="mg-notes-h">Genie's notes <span className="mg-count">{notes.length}</span></div>
-                    {notes.length === 0 && <div className="mg-note-empty">As you open each page and I read it, my notes appear here — building the full picture of your product.</div>}
+                    {notes.length === 0 && <div className="mg-note-empty">As you paste each page and I read it, my notes appear here — building the full picture of your product.</div>}
                     <div className="mg-notes">
                       {notes.map((n, i) => (
                         <div className={"mg-note" + (n.pending ? " pending" : "")} key={i}>
