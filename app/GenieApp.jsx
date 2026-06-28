@@ -421,7 +421,7 @@ export default function App() {
         setTour(t => ({ ...t, reading: false, error: d.message || "Couldn't open the live browser. Add STEEL_API_KEY in Vercel." }));
         return;
       }
-      setTour({ active: true, viewerUrl: d.viewerUrl, sessionId: d.sessionId, reading: false, error: "" });
+      setTour({ active: true, viewerUrl: d.sessionViewerUrl || d.viewerUrl, sessionId: d.sessionId, reading: false, error: "" });
       setMessages(prev => [...prev, { role: "assistant", content: "The live browser is open on the right. Type your product's URL in its address bar and load your storefront — then hit \"Genie, read this page\" and I'll take notes. We'll walk through it room by room." }]);
     } catch (e) {
       setTour(t => ({ ...t, reading: false, error: "Couldn't reach the browser service." }));
