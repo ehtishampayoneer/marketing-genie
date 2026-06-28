@@ -1,6 +1,6 @@
 // Live co-browser via Steel (open-source). Opens a real browser session you can
 // embed and drive; the genie reads whatever page is loaded.
-// Set STEEL_API_KEY in Vercel. Free tier: 15-min sessions, 2 concurrent.
+// Set STEEL_API_KEY in Vercel. Free tier: sessions + 2 concurrent.
 
 const STEEL = "https://api.steel.dev/v1";
 
@@ -15,7 +15,7 @@ export async function POST(req) {
   const action = body.action || "start";
 
   try {
-    // 1) Start a live session and return its embeddable interactive viewer URL.
+    // 1) Start a live session; return its embeddable debugUrl live view.
     if (action === "start") {
       const r = await fetch(STEEL + "/sessions", {
         method: "POST",
@@ -26,22 +26,31 @@ export async function POST(req) {
       if (!r.ok || !s.id) {
         return json({ error: "start-failed", message: s?.message || "Could not start a browser session." }, 200);
       }
-      // Interactive viewer = user can click/scroll/type; showControls = URL + back/forward.
-      const viewer =
-        (s.sessionViewerUrl || ("https://app.steel.dev/sessions/" + s.id)) +
-        "?interactive=true&showControls=true";
-      return json({ sessionId: s.id, viewerUrl: viewer });
+      // The embeddable interactive live view is the session's debugUrl.
+      const debug = s.debugUrl || s.debug_url || "";
+      const viewer = debug
+        ? debug + (debug.includes("?") ? "&" : "?") + "interactive=true&showControls=true"
+        : "";
+      return json({
+        sessionId: s.id,
+        viewerUrl: viewer,
+        sessionViewerUrl: s.sessionViewerUrl || s.session_viewer_url || ""
+      });
     }
 
-    // 2) Read whatever page is currently loaded in the session (the genie's "eyes").
+    // 2) Read whatever page is at the given URL (the genie's "eyes").
     if (action === "read") {
       const r = await fetch(STEEL + "/scrape", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Steel-Api-Key": key },
-        body: JSON.stringify({ url: body.url, format: ["markdown"], delay: 1, useProxy: false })
+        body: JSON.stringify({ url: body.url, format: ["markdown"] })
       });
       const d = await r.json();
-      const content = d?.content?.markdown || d?.markdown || "";
+      const content =
+        d?.content?.markdown ||
+        d?.markdown ||
+        (typeof d?.content === "string" ? d.content : "") ||
+        "";
       return json({ content: content.slice(0, 6000), title: d?.metadata?.title || "" });
     }
 
