@@ -329,7 +329,6 @@ export default function App() {
   const [notes, setNotes] = useState([]);        // genie's notes: one card per room read
   const [tourUrl, setTourUrl] = useState("");    // URL the user wants to read in the tour
   const [sharedUrl, setSharedUrl] = useState(false); // has the user given a product link yet?
-  const [sharedUrl, setSharedUrl] = useState(""); // the product link the user shared with the genie
   const scrollRef = useRef(null);
   const taRef = useRef(null);
 
