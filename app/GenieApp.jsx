@@ -168,6 +168,14 @@ const CSS = `
 .mg-readinput{flex:1;min-width:200px;font-family:var(--mono);font-size:12.5px;padding:9px 12px;border:1px solid var(--hair-2);border-radius:10px;background:var(--card);color:var(--ink-on-p);outline:none}
 .mg-readinput:focus{border-color:var(--graphite)}
 .mg-tour-hint{font-size:12.5px;color:var(--graphite);margin:10px 0 4px;line-height:1.5}
+.mg-pageform{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+.mg-pageitem{display:flex;gap:12px;align-items:center;background:var(--card);border:1px solid var(--hair);border-radius:12px;padding:11px 14px}
+.mg-pageitem-i{flex:0 0 24px;height:24px;border-radius:50%;background:var(--ink-on-p);color:var(--card);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:600}
+.mg-pageitem-b{flex:1;min-width:0}
+.mg-status-pill{font-family:var(--mono);font-size:9.5px;letter-spacing:.6px;text-transform:uppercase;padding:4px 9px;border-radius:20px;flex:0 0 auto;white-space:nowrap}
+.mg-status-pill.wip{background:var(--paper-3);color:var(--graphite)}
+.mg-status-pill.ready{background:var(--ink-on-p);color:var(--card)}
+.mg-status-pill.sent{background:var(--paper);color:var(--graphite);border:1px solid var(--hair-2)}
 .mg-notes-h{display:flex;align-items:center;gap:10px;font-family:var(--display);font-size:17px;font-weight:500;margin:26px 0 12px;color:var(--ink-on-p)}
 .mg-note-empty{font-size:13px;color:var(--graphite);line-height:1.55;background:var(--card);border:1px dashed var(--hair-2);border-radius:12px;padding:16px 18px}
 .mg-notes{display:flex;flex-direction:column;gap:10px}
@@ -327,9 +335,19 @@ export default function App() {
   const [live, setLive] = useState(null);        // growing metrics + chart after approvals
   const [profile, setProfile] = useState(null);  // session memory of the toured product
   const [tour, setTour] = useState({ active: false, viewerUrl: "", sessionId: "", reading: false, error: "" });
-  const [notes, setNotes] = useState([]);        // genie's notes: one card per room read
-  const [tourUrl, setTourUrl] = useState("");    // URL the user wants to read in the tour
+  const [notes, setNotes] = useState([]);        // genie's notes: one card per page read
+  const [tourUrl, setTourUrl] = useState("");    // URL field
+  const [tourTitle, setTourTitle] = useState(""); // title field for the page
+  const [pageList, setPageList] = useState([]);  // [{title, url}] the user is queueing up
+  const [scanning, setScanning] = useState({ active: false, idx: 0, total: 0 });
   const [sharedUrl, setSharedUrl] = useState(false); // has the user given a product link yet?
+
+  // ---- OUTREACH state ----
+  const [outreachQ, setOutreachQ] = useState("");   // target description (who the user wants to reach)
+  const [productPitch, setProductPitch] = useState(""); // short pitch the genie uses for messages
+  const [prospects, setProspects] = useState([]);   // [{name,url,domain,snippet,emails,phones,about,message,status,sentAt}]
+  const [discovering, setDiscovering] = useState(false);
+  const [outreachNote, setOutreachNote] = useState("");
   const scrollRef = useRef(null);
   const taRef = useRef(null);
 
@@ -406,84 +424,203 @@ export default function App() {
     if (taRef.current) taRef.current.focus();
   }
 
-  // ---- LIVE TOUR (self-hosted Steel co-browser) ----
-  async function startTour() {
-    setTour({ active: true, viewerUrl: "", sessionId: "", reading: true, error: "" });
+  // ---- MULTI-PAGE SCAN (free, reliable: paste every page, scan them all at once) ----
+  function startTour() {
+    setTour({ active: true, viewerUrl: "", sessionId: "", reading: false, error: "" });
     setTab("tour");
     if (window.innerWidth <= 860) setMobile("work");
-    try {
-      const r = await fetch("/api/browser", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start" })
-      });
-      const d = await r.json();
-      if (d.error || !d.viewerUrl) {
-        setTour({ active: true, viewerUrl: "", sessionId: "", reading: false,
-          error: d.message || "Couldn't open the live browser. Make sure Steel is running (see the Docker step)." });
-        return;
-      }
-      setTour({ active: true, viewerUrl: d.viewerUrl, sessionId: d.sessionId, reading: false, error: "" });
-      setMessages(prev => [...prev, { role: "assistant", content: "The live browser is open on the right. Type your product's address in its bar and load your storefront, then hit \"Genie, read this page.\" I'll take notes and tell you where to go next — storefront, a category, a product, then your seller and admin areas. Tell me to stop whenever, or I'll tell you when I've seen enough." }]);
-    } catch (e) {
-      setTour({ active: true, viewerUrl: "", sessionId: "", reading: false, error: "Couldn't reach the live browser. Is Steel running on your computer?" });
-    }
+    setMessages(prev => [...prev, { role: "assistant", content: "Add every important page of your product on the right — give each a short title (Storefront, A Category, A Product, About, Contact, Seller Sign-up, etc.) and its URL. Add as many as you want. When you're done, hit \"Scan all pages\" and I'll read every one, take notes, then give you the full marketing read." }]);
   }
 
-  // Read whatever page is loaded in the tour, add a note card, and let the genie react.
-  async function readRoom() {
+  // Add a {title, url} pair to the list.
+  function addPage() {
     const url = tourUrl.trim();
-    if (!url) {
-      setMessages(prev => [...prev, { role: "assistant", content: "Paste the URL that's currently open in the browser into the little box, then hit read — that tells me which page to look at." }]);
+    const title = tourTitle.trim() || roomLabel(url);
+    if (!url) return;
+    if (!/^https?:\/\//.test(url)) {
+      setTour(t => ({ ...t, error: "URL must start with http:// or https://" }));
       return;
     }
-    setTour(t => ({ ...t, reading: true }));
-    setNotes(n => [...n, { url, title: "Reading…", body: "", pending: true }]);
-    try {
-      const r = await fetch("/api/browser", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "read", url })
-      });
-      const d = await r.json();
-      const body = (d.content || "").trim();
-      setNotes(n => {
-        const copy = n.slice();
-        copy[copy.length - 1] = {
-          url,
-          title: d.title || roomLabel(url),
-          body: body ? body.slice(0, 400) : "(couldn't read this page — try the public URL, or describe it to me)",
-          pending: false
-        };
-        return copy;
-      });
-      // Hand the page to the genie so it reacts and guides the next room.
-      const note = "I just read this page during our tour:\nURL: " + url + "\nContent:\n" + (body.slice(0, 3500) || "(empty)") +
-        "\n\nReact with one specific observation, then tell me which room to open next.";
-      setTour(t => ({ ...t, reading: false }));
-      sendSilent(note);
-    } catch (e) {
-      setTour(t => ({ ...t, reading: false }));
-      setNotes(n => { const c = n.slice(); c[c.length - 1] = { url, title: roomLabel(url), body: "(read failed)", pending: false }; return c; });
+    setPageList(p => [...p, { title, url }]);
+    setTourUrl("");
+    setTourTitle("");
+    setTour(t => ({ ...t, error: "" }));
+  }
+
+  function removePage(i) {
+    setPageList(p => p.filter((_, idx) => idx !== i));
+  }
+
+  // Scan every queued page in order — read it, note it, then move to the next.
+  async function scanAll() {
+    if (pageList.length === 0) {
+      setTour(t => ({ ...t, error: "Add at least one page first." }));
+      return;
     }
+    setNotes([]); // fresh start for this scan
+    setScanning({ active: true, idx: 0, total: pageList.length });
+    const collected = [];
+    for (let i = 0; i < pageList.length; i++) {
+      const p = pageList[i];
+      setScanning({ active: true, idx: i + 1, total: pageList.length });
+      setNotes(n => [...n, { url: p.url, title: p.title, body: "Reading…", pending: true }]);
+      try {
+        const r = await fetch("/api/browser", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "read", url: p.url })
+        });
+        const d = await r.json();
+        const body = (d.content || "").trim();
+        collected.push({ title: p.title, url: p.url, body });
+        setNotes(n => {
+          const copy = n.slice();
+          copy[i] = {
+            url: p.url,
+            title: p.title,
+            body: body ? body.slice(0, 500) : "(couldn't read this page — it may need login, or have no public content)",
+            pending: false
+          };
+          return copy;
+        });
+      } catch (e) {
+        setNotes(n => { const c = n.slice(); c[i] = { url: p.url, title: p.title, body: "(read failed)", pending: false }; return c; });
+      }
+    }
+    setScanning({ active: false, idx: 0, total: 0 });
+
+    // Hand the whole collection to the genie for a full marketing read.
+    const handoff =
+      "I've scanned all the pages you gave me. Here's everything I read:\n\n" +
+      collected.map(c =>
+        "## " + c.title + "\nURL: " + c.url + "\n" + (c.body ? c.body.slice(0, 2500) : "(empty)")
+      ).join("\n\n---\n\n") +
+      "\n\nNow give me your FULL marketing read of the whole platform — across every page together. Cover:\n" +
+      "1) What the product is in one line.\n" +
+      "2) Strongest asset (build the plan around this).\n" +
+      "3) Biggest leak / conversion blocker (fix first).\n" +
+      "4) Positioning & messaging — does the value land fast on each page?\n" +
+      "5) Customer journey — where it flows and where it breaks across pages.\n" +
+      "6) Trust signals — what's there, what's missing.\n" +
+      "7) SEO basics you can see (titles, meta, headings, internal links).\n" +
+      "Then deliver the diagnosis: ONE bottleneck, the mode, the right channels, and the first 3 specific moves. Output the genie-state JSON at the end.";
+    sendSilent(handoff);
   }
 
   function roomLabel(url) {
-    const u = url.toLowerCase();
+    const u = (url || "").toLowerCase();
     if (/product|item|listing/.test(u)) return "Product page";
     if (/categor|collection|shop|browse|store/.test(u)) return "Storefront / category";
     if (/seller|admin|dashboard|account/.test(u)) return "Backend / seller";
     if (/price|plan/.test(u)) return "Pricing";
+    if (/about/.test(u)) return "About";
+    if (/contact/.test(u)) return "Contact";
     return "Page";
   }
 
   async function endTour() {
-    if (tour.sessionId) {
-      fetch("/api/browser", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "stop", sessionId: tour.sessionId }) }).catch(() => {});
-    }
     setTour({ active: false, viewerUrl: "", sessionId: "", reading: false, error: "" });
-    sendSilent("That's the whole tour — here are all the rooms I noted: " + notes.map(n => n.title).join(", ") + ". Now give me your confident full read: what the product is, its strongest asset to build on, its biggest leak to fix, then run the diagnosis.");
     setTab("overview");
+  }
+
+  // ---- OUTREACH OPERATOR ----
+  async function discoverProspects() {
+    const q = outreachQ.trim();
+    if (!q) { setOutreachNote("Tell me who to look for first — e.g. 'AR-curious furniture stores in Karachi'."); return; }
+    setDiscovering(true);
+    setOutreachNote("");
+    try {
+      const r = await fetch("/api/outreach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "discover", query: q, count: 10 })
+      });
+      const d = await r.json();
+      if (d.note) setOutreachNote(d.note);
+      const existing = new Set(prospects.map(p => p.domain));
+      const fresh = (d.leads || []).filter(l => !existing.has(l.domain)).map(l => ({
+        ...l, emails: [], phones: [], about: "", message: "", subject: "",
+        status: "new", // new -> extracting -> drafting -> ready -> sent
+        sentAt: ""
+      }));
+      setProspects(p => [...p, ...fresh]);
+    } catch (e) {
+      setOutreachNote("Couldn't reach the search service. Try again in a moment.");
+    } finally {
+      setDiscovering(false);
+    }
+  }
+
+  // For one prospect: read their site, find emails, write a personalized message.
+  async function prepareProspect(domain) {
+    setProspects(ps => ps.map(p => p.domain === domain ? { ...p, status: "extracting" } : p));
+    const p = prospects.find(x => x.domain === domain);
+    if (!p) return;
+    try {
+      const r1 = await fetch("/api/outreach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "extract", url: p.url })
+      });
+      const d1 = await r1.json();
+      setProspects(ps => ps.map(x => x.domain === domain ? { ...x, emails: d1.emails || [], phones: d1.phones || [], about: d1.about || "", status: "drafting" } : x));
+
+      const pitch = productPitch.trim() || (profile ? "Product: " + profile.product + (profile.bottleneck ? ". Edge: helping with " + profile.bottleneck + "." : "") : "");
+      const r2 = await fetch("/api/outreach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "writeMessage",
+          prospect: { ...p, about: d1.about, emails: d1.emails },
+          product: pitch,
+          channel: "email"
+        })
+      });
+      const d2 = await r2.json();
+      const raw = (d2.message || "").trim();
+      // Split out "Subject: ..." first line
+      let subject = "", body = raw;
+      const m = raw.match(/^subject\s*:\s*(.+)\n([\s\S]*)$/i);
+      if (m) { subject = m[1].trim(); body = m[2].trim(); }
+      setProspects(ps => ps.map(x => x.domain === domain ? { ...x, subject, message: body, status: "ready" } : x));
+    } catch (e) {
+      setProspects(ps => ps.map(x => x.domain === domain ? { ...x, status: "new" } : x));
+    }
+  }
+
+  async function prepareAll() {
+    const toDo = prospects.filter(p => p.status === "new").slice(0, 8);
+    for (const p of toDo) {
+      // run sequentially so we don't trip rate limits
+      // eslint-disable-next-line no-await-in-loop
+      await prepareProspect(p.domain);
+    }
+  }
+
+  function copyMessage(domain) {
+    const p = prospects.find(x => x.domain === domain);
+    if (!p) return;
+    const txt = (p.subject ? "Subject: " + p.subject + "\n\n" : "") + (p.message || "");
+    try { navigator.clipboard.writeText(txt); } catch (e) {}
+  }
+
+  function markSent(domain) {
+    setProspects(ps => ps.map(x => x.domain === domain ? { ...x, status: "sent", sentAt: new Date().toLocaleString() } : x));
+  }
+
+  function removeProspect(domain) {
+    setProspects(ps => ps.filter(x => x.domain !== domain));
+  }
+
+  function statusLabel(s) {
+    return s === "new" ? "new" :
+           s === "extracting" ? "reading site" :
+           s === "drafting" ? "writing" :
+           s === "ready" ? "ready" :
+           s === "sent" ? "sent" : s;
+  }
+  function statusClass(s) {
+    return s === "ready" ? "ready" : s === "sent" ? "sent" : "wip";
   }
 
   // Send a message to the genie WITHOUT showing it as a user bubble (system-style nudge).
@@ -614,7 +751,7 @@ export default function App() {
     { id: "blog", label: "Blog/SEO" },
     { id: "email", label: "Email" },
     { id: "ads", label: "Ads" },
-    { id: "outreach", label: "Outreach" }
+    { id: "outreach", label: "Outreach", always: true },
   ];
 
   return (
@@ -722,41 +859,77 @@ export default function App() {
 
                 {sharedUrl && !tour.active && (
                   <div className="mg-tour-start">
-                    <p>Ready when you are. I'll open a live browser right here — load your product in it, click through it room by room (storefront, categories, products, and your seller &amp; admin areas), and I'll read each page and take notes. When I've seen enough, I give you the full read and the plan.</p>
-                    <button className="mg-b go" style={{ padding: "10px 18px", fontSize: 13 }} onClick={startTour}>Open the live browser →</button>
+                    <p>Ready when you are. I'll build a full marketing read by scanning every important page of your product. Add each page (title + URL), then I scan them all in one go and deliver the complete analysis.</p>
+                    <button className="mg-b go" style={{ padding: "10px 18px", fontSize: 13 }} onClick={startTour}>Start the scan →</button>
                   </div>
                 )}
 
                 {tour.active && (
                   <>
+                    {/* Add pages form */}
+                    <div className="mg-pageform">
+                      <input
+                        className="mg-readinput"
+                        style={{ flex: "0 0 200px" }}
+                        placeholder="Page title (e.g. Storefront)"
+                        value={tourTitle}
+                        onChange={e => setTourTitle(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") addPage(); }}
+                      />
+                      <input
+                        className="mg-readinput"
+                        placeholder="https://… page URL"
+                        value={tourUrl}
+                        onChange={e => setTourUrl(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") addPage(); }}
+                      />
+                      <button className="mg-b" onClick={addPage}>+ Add</button>
+                    </div>
                     {tour.error && <div className="mg-tour-err">{tour.error}</div>}
-                    {!tour.viewerUrl && tour.reading && <div className="mg-tour-hint">Opening your live browser…</div>}
+                    <div className="mg-tour-hint">Add as many as you need — storefront, categories, products, about, contact, pricing, signup, seller pages, anything you want me to see. The more I read, the sharper the read.</div>
 
-                    {tour.viewerUrl && (
-                      <div className="mg-browser">
-                        <iframe title="Live tour" src={tour.viewerUrl} className="mg-iframe" allow="clipboard-read; clipboard-write" />
-                      </div>
+                    {/* Pages queued */}
+                    {pageList.length > 0 && (
+                      <>
+                        <div className="mg-notes-h">Pages to scan <span className="mg-count">{pageList.length}</span></div>
+                        <div className="mg-notes">
+                          {pageList.map((p, i) => (
+                            <div className="mg-pageitem" key={i}>
+                              <div className="mg-pageitem-i">{i + 1}</div>
+                              <div className="mg-pageitem-b">
+                                <div className="mg-note-t">{p.title}</div>
+                                <div className="mg-note-u">{p.url}</div>
+                              </div>
+                              <button className="mg-b" onClick={() => removePage(i)} title="Remove">×</button>
+                            </div>
+                          ))}
+                        </div>
+                      </>
                     )}
 
-                    <div className="mg-readbar">
-                      <input className="mg-readinput" placeholder="Paste the address that's open above, then →" value={tourUrl} onChange={e => setTourUrl(e.target.value)} onKeyDown={e => { if (e.key === "Enter") readRoom(); }} />
-                      <button className="mg-b go" disabled={tour.reading} onClick={readRoom}>{tour.reading ? "Reading…" : "Genie, read this page"}</button>
-                      <button className="mg-b" onClick={endTour}>Finish tour</button>
+                    {/* Scan controls */}
+                    <div className="mg-readbar" style={{ marginTop: 18 }}>
+                      <button className="mg-b go" disabled={scanning.active || pageList.length === 0} onClick={scanAll}>
+                        {scanning.active ? "Scanning " + scanning.idx + " / " + scanning.total + "…" : "Scan all pages →"}
+                      </button>
+                      <button className="mg-b" onClick={endTour} disabled={scanning.active}>Cancel</button>
                     </div>
-                    <div className="mg-tour-hint">Walk through it room by room — storefront, a category, a product, then your seller &amp; admin areas. I'll note each one and tell you when I've seen enough.</div>
 
-                    {/* Genie's Notes */}
-                    <div className="mg-notes-h">Genie's notes <span className="mg-count">{notes.length}</span></div>
-                    {notes.length === 0 && <div className="mg-note-empty">As you open each page and I read it, my notes appear here — building the full picture of your product.</div>}
-                    <div className="mg-notes">
-                      {notes.map((n, i) => (
-                        <div className={"mg-note" + (n.pending ? " pending" : "")} key={i}>
-                          <div className="mg-note-t">{n.title}</div>
-                          <div className="mg-note-u">{n.url}</div>
-                          <div className="mg-note-b">{n.body}</div>
+                    {/* Genie's Notes (filled by the scan) */}
+                    {notes.length > 0 && (
+                      <>
+                        <div className="mg-notes-h">Genie's notes <span className="mg-count">{notes.length}</span></div>
+                        <div className="mg-notes">
+                          {notes.map((n, i) => (
+                            <div className={"mg-note" + (n.pending ? " pending" : "")} key={i}>
+                              <div className="mg-note-t">{n.title}</div>
+                              <div className="mg-note-u">{n.url}</div>
+                              <div className="mg-note-b">{n.body}</div>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                      </>
+                    )}
                   </>
                 )}
               </div>
@@ -868,7 +1041,100 @@ export default function App() {
               </div>
             )}
 
-            {state && tab !== "overview" && tab !== "tour" && (
+            {tab === "outreach" && (
+              <div className="mg-fadein">
+                <div className="mg-eyebrow" style={{ marginBottom: 4 }}>Pillar · Outreach</div>
+                <div className="mg-h" style={{ marginBottom: 16, fontSize: 23 }}>Find prospects, write to them, track replies.</div>
+
+                {/* Setup */}
+                <div className="mg-tour-start" style={{ padding: "18px 20px" }}>
+                  <div className="mg-eyebrow" style={{ margin: "0 0 8px" }}>1 · Who are you trying to reach?</div>
+                  <input
+                    className="mg-readinput"
+                    style={{ width: "100%", marginBottom: 12 }}
+                    placeholder='e.g. "AR-curious furniture stores in Karachi" or "indie SaaS founders launching in 2026"'
+                    value={outreachQ}
+                    onChange={e => setOutreachQ(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") discoverProspects(); }}
+                  />
+                  <div className="mg-eyebrow" style={{ margin: "0 0 8px" }}>2 · Your pitch in one line (the genie uses this in every message)</div>
+                  <input
+                    className="mg-readinput"
+                    style={{ width: "100%", marginBottom: 12 }}
+                    placeholder={profile ? profile.product + " — " + (profile.bottleneck || "what you do") : "What your product is and who it helps"}
+                    value={productPitch}
+                    onChange={e => setProductPitch(e.target.value)}
+                  />
+                  <div className="mg-readbar" style={{ marginTop: 4 }}>
+                    <button className="mg-b go" disabled={discovering} onClick={discoverProspects}>
+                      {discovering ? "Searching the web…" : "Find prospects →"}
+                    </button>
+                    <button className="mg-b" disabled={prospects.filter(p => p.status === "new").length === 0} onClick={prepareAll}>
+                      Prepare all new ({prospects.filter(p => p.status === "new").length})
+                    </button>
+                  </div>
+                  {outreachNote && <div className="mg-tour-err" style={{ marginTop: 12 }}>{outreachNote}</div>}
+                </div>
+
+                {/* Prospect list */}
+                {prospects.length > 0 && (
+                  <>
+                    <div className="mg-notes-h">Prospects <span className="mg-count">{prospects.length}</span></div>
+                    <div className="mg-notes">
+                      {prospects.map((p) => (
+                        <div className="mg-note" key={p.domain}>
+                          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div className="mg-note-t">{p.name || p.domain}</div>
+                              <div className="mg-note-u">{p.url}</div>
+                              {p.snippet && <div className="mg-note-b" style={{ marginTop: 6 }}>{p.snippet}</div>}
+                            </div>
+                            <span className={"mg-status-pill " + statusClass(p.status)}>{statusLabel(p.status)}</span>
+                          </div>
+
+                          {p.emails && p.emails.length > 0 && (
+                            <div style={{ marginTop: 10 }}>
+                              <div className="mg-eyebrow" style={{ margin: "0 0 4px" }}>Contacts</div>
+                              <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink-on-p)", wordBreak: "break-all" }}>{p.emails.join(" · ")}</div>
+                              {p.phones && p.phones.length > 0 && <div style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--graphite)", marginTop: 4 }}>{p.phones.join(" · ")}</div>}
+                            </div>
+                          )}
+
+                          {p.message && (
+                            <div style={{ marginTop: 12, background: "var(--paper-3)", border: "1px solid var(--hair)", borderRadius: 10, padding: "12px 14px" }}>
+                              {p.subject && <div style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--graphite-2)", marginBottom: 6 }}>Subject: {p.subject}</div>}
+                              <div className="mg-note-b" style={{ whiteSpace: "pre-wrap", color: "var(--ink-on-p)" }}>{p.message}</div>
+                            </div>
+                          )}
+
+                          <div className="mg-readbar" style={{ marginTop: 12, gap: 6 }}>
+                            {p.status === "new" && <button className="mg-b go" onClick={() => prepareProspect(p.domain)}>Prepare message</button>}
+                            {(p.status === "extracting" || p.status === "drafting") && <span className="mg-done">{p.status === "extracting" ? "Reading their site…" : "Writing message…"}</span>}
+                            {p.status === "ready" && (
+                              <>
+                                <button className="mg-b go" onClick={() => copyMessage(p.domain)}>Copy</button>
+                                <button className="mg-b" onClick={() => prepareProspect(p.domain)}>Rewrite</button>
+                                <button className="mg-b" onClick={() => markSent(p.domain)}>Mark sent</button>
+                              </>
+                            )}
+                            {p.status === "sent" && <span className="mg-done">✓ Sent {p.sentAt}</span>}
+                            <button className="mg-b" onClick={() => removeProspect(p.domain)} title="Remove" style={{ marginLeft: "auto" }}>×</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {prospects.length === 0 && (
+                  <div className="mg-note-empty" style={{ marginTop: 18 }}>
+                    Tell me who you're chasing and I'll search the web for them, read their sites, pull contact emails, and write each one a personalized message. You review and send.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {state && tab !== "overview" && tab !== "tour" && tab !== "outreach" && (
               <PillarView id={tab} state={state} dials={dials} setDials={setDials} />
             )}
           </div>
