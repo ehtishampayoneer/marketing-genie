@@ -473,18 +473,21 @@ export default function App() {
         const d = await r.json();
         const body = (d.content || "").trim();
         collected.push({ title: p.title, url: p.url, body });
+        const fallbackMsg = d.error
+          ? "(reader hit a wall: " + d.error + ")"
+          : "(returned empty — site may block readers; try opening it in a normal browser to confirm it loads)";
         setNotes(n => {
           const copy = n.slice();
           copy[i] = {
             url: p.url,
             title: p.title,
-            body: body ? body.slice(0, 500) : "(couldn't read this page — it may need login, or have no public content)",
+            body: body ? body.slice(0, 500) : fallbackMsg,
             pending: false
           };
           return copy;
         });
       } catch (e) {
-        setNotes(n => { const c = n.slice(); c[i] = { url: p.url, title: p.title, body: "(read failed)", pending: false }; return c; });
+        setNotes(n => { const c = n.slice(); c[i] = { url: p.url, title: p.title, body: "(network error — " + String(e).slice(0, 80) + ")", pending: false }; return c; });
       }
     }
     setScanning({ active: false, idx: 0, total: 0 });
@@ -524,6 +527,109 @@ export default function App() {
   }
 
   // ---- OUTREACH OPERATOR ----
+  // When you open Outreach for the first time, the Genie automatically figures out
+  // who to chase from the product it already toured. You don't ask; it proposes & goes.
+  const [autoStarted, setAutoStarted] = useState(false);
+
+  useEffect(() => {
+    if (tab === "outreach" && !autoStarted && profile && prospects.length === 0 && !discovering) {
+      setAutoStarted(true);
+      autoOutreach();
+    }
+  }, [tab, profile]); // eslint-disable-line
+
+  // Ask the genie what to search for AND what the pitch should be, based on its memory.
+  async function autoOutreach() {
+    setDiscovering(true);
+    setOutreachNote("Genie is figuring out who to chase based on your product…");
+    try {
+      const planRes = await fetch("/api/genie", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [{
+            role: "user",
+            content:
+              "You are picking who to cold-email for the product below. Output ONLY a JSON object with EXACTLY two keys and nothing else.\n" +
+              "{\"query\":\"<a short specific web search query that will surface ACTUAL businesses or people who'd buy this — include a niche AND a location/context, max 12 words>\",\"pitch\":\"<one plain sentence saying what this product is and what it gives the prospect, max 25 words>\"}\n" +
+              "No code fences. No prose. JSON only.\n\n" +
+              "PRODUCT PROFILE: " + JSON.stringify(profile) +
+              (state ? "\nDIAGNOSIS: " + JSON.stringify({ bottleneck: state.bottleneck, line: state.bottleneckLine, mode: state.mode }) : "")
+          }],
+          memory: ""
+        })
+      });
+      let txt = "";
+      if (planRes.body) {
+        const reader = planRes.body.getReader();
+        const dec = new TextDecoder();
+        while (true) { const { done, value } = await reader.read(); if (done) break; txt += dec.decode(value, { stream: true }); }
+      } else { txt = await planRes.text(); }
+      let plan = null;
+      const m = txt.match(/\{[\s\S]*\}/);
+      if (m) { try { plan = JSON.parse(m[0]); } catch (e) {} }
+      const query = (plan && plan.query) || ((profile && profile.product) ? "businesses interested in " + profile.product : "small businesses");
+      const pitch = (plan && plan.pitch) || ((profile && profile.product) ? profile.product + " — " + (profile.bottleneck || "growth help") : "");
+      setOutreachQ(query);
+      setProductPitch(pitch);
+
+      setOutreachNote("Genie is searching the web for: " + query);
+      const r = await fetch("/api/outreach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "discover", query, count: 10 })
+      });
+      const d = await r.json();
+      if ((!d.leads || d.leads.length === 0)) {
+        setOutreachNote(d.note || "No prospects found for that query — try refining it below.");
+        setDiscovering(false);
+        return;
+      }
+      const existing = new Set(prospects.map(p => p.domain));
+      const fresh = (d.leads || []).filter(l => !existing.has(l.domain)).map(l => ({
+        ...l, emails: [], phones: [], about: "", message: "", subject: "",
+        status: "new", sentAt: ""
+      }));
+      setProspects(fresh);
+      setOutreachNote("Found " + fresh.length + " prospects. Genie is now reading each site and writing personalized messages…");
+      setDiscovering(false);
+
+      for (const p of fresh.slice(0, 8)) {
+        // eslint-disable-next-line no-await-in-loop
+        await prepareProspectInline(p, pitch);
+      }
+      setOutreachNote("Done. Each prospect has a ready-to-send personalized email below. Review and copy.");
+    } catch (e) {
+      setDiscovering(false);
+      setOutreachNote("Couldn't auto-run. Use \"Find prospects\" to run it manually.");
+    }
+  }
+
+  // Inline prepare (takes pitch as a param so it doesn't fight React state).
+  async function prepareProspectInline(p, pitch) {
+    setProspects(ps => ps.map(x => x.domain === p.domain ? { ...x, status: "extracting" } : x));
+    try {
+      const r1 = await fetch("/api/outreach", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "extract", url: p.url })
+      });
+      const d1 = await r1.json();
+      setProspects(ps => ps.map(x => x.domain === p.domain ? { ...x, emails: d1.emails || [], phones: d1.phones || [], about: d1.about || "", status: "drafting" } : x));
+      const r2 = await fetch("/api/outreach", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "writeMessage", prospect: { ...p, about: d1.about, emails: d1.emails }, product: pitch, channel: "email" })
+      });
+      const d2 = await r2.json();
+      const raw = (d2.message || "").trim();
+      let subject = "", body = raw;
+      const m = raw.match(/^subject\s*:\s*(.+)\n([\s\S]*)$/i);
+      if (m) { subject = m[1].trim(); body = m[2].trim(); }
+      setProspects(ps => ps.map(x => x.domain === p.domain ? { ...x, subject, message: body, status: "ready" } : x));
+    } catch (e) {
+      setProspects(ps => ps.map(x => x.domain === p.domain ? { ...x, status: "new" } : x));
+    }
+  }
+
   async function discoverProspects() {
     const q = outreachQ.trim();
     if (!q) { setOutreachNote("Tell me who to look for first — e.g. 'AR-curious furniture stores in Karachi'."); return; }
@@ -1044,36 +1150,36 @@ export default function App() {
             {tab === "outreach" && (
               <div className="mg-fadein">
                 <div className="mg-eyebrow" style={{ marginBottom: 4 }}>Pillar · Outreach</div>
-                <div className="mg-h" style={{ marginBottom: 16, fontSize: 23 }}>Find prospects, write to them, track replies.</div>
+                <div className="mg-h" style={{ marginBottom: 16, fontSize: 23 }}>Genie finds prospects, writes to them, tracks replies.</div>
 
-                {/* Setup */}
+                {/* Setup — auto-filled by genie, refine only if you want */}
                 <div className="mg-tour-start" style={{ padding: "18px 20px" }}>
-                  <div className="mg-eyebrow" style={{ margin: "0 0 8px" }}>1 · Who are you trying to reach?</div>
+                  <div className="mg-eyebrow" style={{ margin: "0 0 8px" }}>Target audience (genie set this from your product — edit if you want)</div>
                   <input
                     className="mg-readinput"
                     style={{ width: "100%", marginBottom: 12 }}
-                    placeholder='e.g. "AR-curious furniture stores in Karachi" or "indie SaaS founders launching in 2026"'
+                    placeholder={discovering ? "Genie is figuring it out…" : "Auto-filled when the genie diagnoses your product"}
                     value={outreachQ}
                     onChange={e => setOutreachQ(e.target.value)}
                     onKeyDown={e => { if (e.key === "Enter") discoverProspects(); }}
                   />
-                  <div className="mg-eyebrow" style={{ margin: "0 0 8px" }}>2 · Your pitch in one line (the genie uses this in every message)</div>
+                  <div className="mg-eyebrow" style={{ margin: "0 0 8px" }}>Pitch line (genie uses this in every message)</div>
                   <input
                     className="mg-readinput"
                     style={{ width: "100%", marginBottom: 12 }}
-                    placeholder={profile ? profile.product + " — " + (profile.bottleneck || "what you do") : "What your product is and who it helps"}
+                    placeholder={profile ? profile.product + " — " + (profile.bottleneck || "what you do") : "Auto-filled once the genie knows your product"}
                     value={productPitch}
                     onChange={e => setProductPitch(e.target.value)}
                   />
                   <div className="mg-readbar" style={{ marginTop: 4 }}>
                     <button className="mg-b go" disabled={discovering} onClick={discoverProspects}>
-                      {discovering ? "Searching the web…" : "Find prospects →"}
+                      {discovering ? "Searching…" : "Re-run search"}
                     </button>
                     <button className="mg-b" disabled={prospects.filter(p => p.status === "new").length === 0} onClick={prepareAll}>
-                      Prepare all new ({prospects.filter(p => p.status === "new").length})
+                      Prepare new ({prospects.filter(p => p.status === "new").length})
                     </button>
                   </div>
-                  {outreachNote && <div className="mg-tour-err" style={{ marginTop: 12 }}>{outreachNote}</div>}
+                  {outreachNote && <div className="mg-tour-err" style={{ marginTop: 12, background: discovering ? "var(--paper-3)" : "var(--ink-on-p)", color: discovering ? "var(--graphite)" : "var(--card)" }}>{outreachNote}</div>}
                 </div>
 
                 {/* Prospect list */}
@@ -1126,9 +1232,11 @@ export default function App() {
                   </>
                 )}
 
-                {prospects.length === 0 && (
+                {prospects.length === 0 && !discovering && (
                   <div className="mg-note-empty" style={{ marginTop: 18 }}>
-                    Tell me who you're chasing and I'll search the web for them, read their sites, pull contact emails, and write each one a personalized message. You review and send.
+                    {profile
+                      ? "Genie is about to figure out who to chase based on what it learned about your product. If nothing happens automatically, hit \"Re-run search\" above."
+                      : "Share your product link in the chat first — once the genie tours your product, it'll automatically find prospects here and write each one a personalized message."}
                   </div>
                 )}
               </div>
